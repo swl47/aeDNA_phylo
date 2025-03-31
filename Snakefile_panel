@@ -1,3 +1,4 @@
+##Snakemake pipeline for calling variants, for reference panel
 configfile: "config.yaml"
 
 rule all:
@@ -28,7 +29,6 @@ rule temp_dir:
        "touch {output}"
 
 
-##bwa mapping
 rule bwa_map:
     resources:
         runtime = 3000,
@@ -75,7 +75,6 @@ rule fixmate:
     shell:
         "(samtools sort -n -T {params.tmpdir} {input}| samtools fixmate -r - - | samtools sort -T {params.tmpdir} - > {output}) 2> {log}"    
 
-#index fixmated files
 rule index_fix:
     input:
         "fixbam/{id}.bam"
@@ -112,16 +111,6 @@ rule index_rmd:
         "rmdbam/{id}.bam.bai"
     shell:
         "samtools index {input}"
-
-rule stats:
-    input:
-        "rmdbam/{id}.bam"
-    output:
-        stats="rmdbam/{id}.stats",
-        flagstat="rmdbam/{id}.flagstat"
-    shell:
-        "samtools stats {input} > {output.stats}"
-        "samtools flagstat {input} > {output.flagstat}"
 
 rule call_vcf:
     resources:
