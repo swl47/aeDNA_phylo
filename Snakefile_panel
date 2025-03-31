@@ -1,0 +1,167 @@
+configfile: "config.yaml"
+
+rule all:
+    input: expand("vcf/{id}.sorted.vcf.gz.tbi", id=config["ID"])
+
+rule fastp:
+    resources:
+        mem_mb = 300000,
+        nodes = 4
+    input:
+        fq1="fastq/{id}_1.fastq.gz",
+        fq2="fastq/{id}_2.fastq.gz"
+    output:
+        fq1="noAdapt/{id}_1.fq.gz",
+        fq2="noAdapt/{id}_2.fq.gz",
+        html="noAdapt/{id}.fastp.html"
+    threads: 8
+    log:
+        "logs/noAdapt/{id}.gz.log"
+    shell:
+        "fastp -i {input.fq1} -I {input.fq2} -o {output.fq1} -O {output.fq2} -V --detect_adapter_for_pe -D -g -x -l 30 -h -w 30 -h {output.html}"
+
+
+rule temp_dir:
+    output:
+       "tmp/{id}/{id}.txt"
+    shell:
+       "touch {output}"
+
+
+##bwa mapping
+rule bwa_map:
+    resources:
+        runtime = 3000,
+        mem_mb = 100000,
+        nodes = 8,
+    input:
+        fa="/home/export/base/ycsc_wx/liuz/online1/swl47/callsets/Bos/reference/GCF_002263795.3_ARS-UCD2.0_genomic.fa",     
+        fq1="noAdapt/{id}_1.fq.gz",
+        fq2="noAdapt/{id}_2.fq.gz",
+        tmpfile=ancient("tmp/{id}/{id}.txt")
+    output:
+        bam="bam/{id}.bam"
+    log:
+        "logs/bwa/{id}.bwa.log"
+    params:
+        rg1="@RG\\tPL:Illumina\\tSM:",
+        rg2="\\tID:",
+        tmpdir="tmp/{id}/{id}"
+    threads: 8
+    shell:
+        "(bwa mem -t {threads} -M -R '{params.rg1}{wildcards.id}{params.rg2}{wildcards.id}' {input.fa} {input.fq1} {input.fq2} | samtools sort -T {params.tmpdir} - > {output.bam}) 2> {log}"
+
+rule index:
+    input:
+        "bam/{id}.bam"
+    output:
+        "bam/{id}.bam.bai"
+    shell:
+        "samtools index {input}"
+
+
+rule fixmate:
+    resources:
+        mem_mb = 10000,
+        nodes = 8
+    input:
+        "bam/{id}.bam"
+    output:
+        "fixbam/{id}.bam"
+    log:
+        "logs/fixmate/{id}.bam.log"
+    params:
+        tmpdir="tmp/{id}/{id}"
+    shell:
+        "(samtools sort -n -T {params.tmpdir} {input}| samtools fixmate -r - - | samtools sort -T {params.tmpdir} - > {output}) 2> {log}"    
+
+#index fixmated files
+rule index_fix:
+    input:
+        "fixbam/{id}.bam"
+    output:
+        "fixbam/{id}.bam.bai"
+    shell:
+        "samtools index {input}"
+
+
+rule remove_duplicates:
+    resources:
+        mem_mb = 140000,
+        nodes = 8
+    input:
+        bam="fixbam/{id}.bam",
+        bai="fixbam/{id}.bam.bai"
+    output:
+        bam="rmdbam/{id}.bam",
+        metrics="rmdbam/{id}.bam.metrics"
+    log:
+        "logs/picard/{id}.bam.log"
+    threads: 8
+    shell:
+        "java -Xmx70g -jar /home/export/base/ycsc_wx/liuz/online1/software/picard/picard.jar MarkDuplicates \
+        -REMOVE_DUPLICATES true -ASSUME_SORTED true -VALIDATION_STRINGENCY SILENT -MAX_FILE_HANDLES_FOR_READ_ENDS_MAP 1000 \
+        -INPUT {input.bam} \
+        -OUTPUT {output.bam} \
+        -METRICS_FILE {output.metrics}"
+
+rule index_rmd:
+    input:
+        "rmdbam/{id}.bam"
+    output:
+        "rmdbam/{id}.bam.bai"
+    shell:
+        "samtools index {input}"
+
+rule stats:
+    input:
+        "rmdbam/{id}.bam"
+    output:
+        stats="rmdbam/{id}.stats",
+        flagstat="rmdbam/{id}.flagstat"
+    shell:
+        "samtools stats {input} > {output.stats}"
+        "samtools flagstat {input} > {output.flagstat}"
+
+rule call_vcf:
+    resources:
+        runtime = 3000,
+        mem_mb = 100000,
+        nodes = 8
+    threads: 60
+    input:
+        fa="/home/export/base/ycsc_wx/liuz/online1/swl47/callsets/Bos/reference/GCF_002263795.3_ARS-UCD2.0_genomic.calling.fa",
+        bam="rmdbam/{id}.bam"
+    output:
+        "vcf/{id}.vcf.gz"
+    log:
+        "logs/mpileup/{id}.vcf.log"
+    shell:
+        "(bcftools mpileup --threads {threads} -Ou -f {input.fa} {input.bam} | bcftools call -m --threads {threads} -Oz - > {output}) 2> {log}"
+        
+rule sort_vcf:
+    resources:
+        mem_mb=100000,
+        nodes=4
+    threads:60
+    input:
+        "vcf/{id}.vcf.gz"
+    output:
+        "vcf/{id}.sorted.vcf.gz"
+    params:
+        tmpdir="tmp/{id}/{id}"
+    log:
+        "logs/sortvcf/{id}.vcf.log"
+    shell:
+        "(bcftools sort -m 90G -Oz {input} -T {params.tmpdir} - > {output}) 2> {log}"
+
+rule index_vcf:
+    threads:60
+    input:
+        "vcf/{id}.sorted.vcf.gz"
+    output:
+        "vcf/{id}.sorted.vcf.gz.tbi"
+    log:
+        "logs/indexvcf/{id}.sorted.vcf.log"
+    shell:
+        "(bcftools index -f -t --threads {threads} {input} - > {output}) 2> {log}"
