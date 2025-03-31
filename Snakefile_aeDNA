@@ -1,0 +1,105 @@
+#Snakemake pipeline for calling variants from aeDNA data
+configfile: "config.step2.yaml"
+
+rule all:
+    input: expand("vcf/{id}.sorted.vcf.gz.tbi", id=config["ID"])
+
+
+rule sort_bam:
+    input: 
+        "bam/{id}.bam"
+    output:
+        "bamsort/{id}.bam"
+    shell:
+        "samtools sort {input} > {output}"
+
+
+rule index_bam:
+    input:
+        "bamsort/{id}.bam"
+    output:
+        "bamsort/{id}.bam.bai"
+    shell:
+        "samtools index {input}"
+
+rule remove_duplicates:
+    resources:
+        mem_mb = 70000,
+        nodes = 8
+    input:
+        bam="bamsort/{id}.bam",
+        bai="bamsort/{id}.bam.bai"
+    output:
+        bam="rmdbam/{id}.bam",
+        metrics="rmdbam/{id}.bam.metrics"
+    log:
+        "logs/picard/{id}.bam.log"
+    threads: 8
+    shell:
+        "java -Xmx40g -jar /home/export/base/ycsc_wx/liuz/online1/software/picard/picard.jar MarkDuplicates \
+        -REMOVE_DUPLICATES true -ASSUME_SORTED true -VALIDATION_STRINGENCY SILENT -MAX_FILE_HANDLES_FOR_READ_ENDS_MAP 1000 \
+        -INPUT {input.bam} \
+        -OUTPUT {output.bam} \
+        -METRICS_FILE {output.metrics}"
+
+
+rule index_rmd:
+    input:
+        "rmdbam/{id}.bam"
+    output:
+        "rmdbam/{id}.bam.bai"
+    shell:
+        "samtools index {input}"
+
+
+rule stats:
+    input:
+        "rmdbam/{id}.bam"
+    output:
+        stats="rmdbam/{id}.stats",
+        flagstat="rmdbam/{id}.flagstat"
+    shell:
+        "samtools stats {input} > {output.stats};"
+        "samtools flagstat {input} > {output.flagstat}"
+       
+
+rule call_vcf:
+    resources:
+        runtime = 3000,
+        mem_mb = 100000,
+        nodes = 8
+    threads: 60
+    input:
+        fa="/home/export/base/ycsc_wx/liuz/online1/swl47/callsets/Bos/reference/GCF_002263795.3_ARS-UCD2.0_genomic.calling.fa",
+        bam="rmdbam/{id}.bam"
+    output:
+        "vcf/{id}.vcf.gz"
+    log:
+        "logs/mpileup/{id}.vcf.log"
+    shell:
+        "(bcftools mpileup --threads {threads} -Ou -f {input.fa} {input.bam} | bcftools call -m --threads {threads} -Oz - > {output}) 2> {log}"
+        
+rule sort_vcf:
+    resources:
+        mem_mb=100000,
+        nodes=4
+    threads:60
+    input:
+        "vcf/{id}.vcf.gz"
+    output:
+        "vcf/{id}.sorted.vcf.gz"
+    log:
+        "logs/sortvcf/{id}.vcf.log"
+    shell:
+        "(bcftools sort -m 90G -Oz {input} - > {output}) 2> {log}"
+
+rule index_vcf:
+    threads:60
+    input:
+        "vcf/{id}.sorted.vcf.gz"
+    output:
+        "vcf/{id}.sorted.vcf.gz.tbi"
+    log:
+        "logs/indexvcf/{id}.sorted.vcf.log"
+    shell:
+        "(bcftools index -f -t --threads {threads} {input} - > {output}) 2> {log}"
